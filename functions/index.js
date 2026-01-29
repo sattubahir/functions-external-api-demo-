@@ -1,0 +1,80 @@
+
+require("dotenv").config();
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
+const axios = require("axios");
+
+admin.initializeApp();
+const db = admin.firestore();
+
+exports.qbAuth = functions.https.onRequest((req, res) => {
+  const authUrl =
+    "https://appcenter.intuit.com/connect/oauth2" +
+    "?client_id=" + process.env.QB_CLIENT_ID +
+    "&redirect_uri=" + encodeURIComponent(process.env.QB_REDIRECT_URI) +
+    "&response_type=code" +
+    "&scope=com.intuit.quickbooks.accounting" +
+    "&state=test";
+
+  res.redirect(authUrl);
+});
+
+// THIS WAS MISSING 👇
+exports.qbAuthCallback = functions.https.onRequest(async (req, res) => {
+  try {
+    const code = req.query.code;
+    const realmId = req.query.realmId;
+
+    const tokenRes = await axios.post(
+      "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: process.env.QB_REDIRECT_URI
+      }),
+      {
+        auth: {
+          username: process.env.QB_CLIENT_ID,
+          password: process.env.QB_CLIENT_SECRET
+        },
+        headers: { "Content-Type": "application/x-www-form-urlencoded" }
+      }
+    );
+
+    await db.collection("qb_tokens").doc("main").set({
+      ...tokenRes.data,
+      realmId
+    });
+
+    res.send("QuickBooks Connected Successfully!");
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).send("OAuth failed");
+  }
+});
+
+//Real API function to get customers
+
+exports.getQBCustomers = functions.https.onRequest(async (req, res) => {
+  try {
+    const tokenDoc = await db.collection("qb_tokens").doc("main").get();
+    const { access_token, realmId } = tokenDoc.data();
+
+    const qbRes = await axios.get(
+      `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/query`,
+      {
+        params: { query: "select * from Customer" },
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    res.json(qbRes.data.QueryResponse.Customer);
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).send("Failed to fetch customers");
+  }
+});
+
