@@ -5,6 +5,10 @@ const admin = require("firebase-admin");
 const axios = require("axios");
 
 admin.initializeApp();
+//importing the Firestore to Sheets trigger
+const { syncCustomerToSheet } = require("./triggers/firestoreToSheets");
+exports.syncCustomerToSheet = syncCustomerToSheet;
+
 const db = admin.firestore();
 
 exports.qbAuth = functions.https.onRequest((req, res) => {
@@ -234,5 +238,86 @@ exports.syncQBItems = functions.https.onRequest(async (req, res) => {
     res.status(500).send("Item sync failed");
   }
 }); 
-
 // Additional functions can be added similarly
+
+
+// Function to get total revenue from payments
+// exports.getTotalRevenue = functions.https.onRequest(async (req, res) => {
+//   const snapshot = await db.collection("qb_payments").get();
+//   let total = 0;
+//   snapshot.forEach(doc => {
+//     total += doc.data().totalAmt || 0;
+//   });
+//   res.json({ totalRevenue: total });
+// });
+
+exports.createHubSpotContact = functions.https.onRequest(async (req, res) => {
+  try {
+    const { email, firstName, lastName } = req.body;
+
+    const hubspotRes = await axios.post(
+      "https://api.hubapi.com/crm/v3/objects/contacts",
+      {
+        properties: {
+          email,
+          firstname: firstName,
+          lastname: lastName
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    res.json(hubspotRes.data);
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).send("HubSpot contact creation failed");
+  }
+});
+
+//Sync QuickBooks customers to HubSpot
+exports.syncQBToHubSpot = functions.https.onRequest(async (req, res) => {
+  try {
+    // 1. Read customers from Firestore (hub)
+    const snapshot = await db.collection("qb_customers").get();
+
+    let success = 0;
+    let failed = 0;
+
+    for (const doc of snapshot.docs) {
+      const c = doc.data();
+
+      if (!c.email) continue;
+
+      try {
+        await axios.post(
+          "https://api.hubapi.com/crm/v3/objects/contacts",
+          {
+            properties: {
+              email: c.email,
+              firstname: c.name
+            }
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+        success++;
+      } catch (e) {
+        failed++;
+      }
+    }
+
+    res.json({ success, failed });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("QB → HubSpot sync failed");
+  }
+});
