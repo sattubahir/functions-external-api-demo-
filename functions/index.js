@@ -154,3 +154,85 @@ exports.syncQBPayments = functions.https.onRequest(async (req, res) => {
     res.status(500).send("Payment sync failed");
   }
 });
+``
+//function to sync Vendors to Firestore
+
+exports.syncQBVendors =  functions.https.onRequest(async (req, res) => {
+  try {
+    const tokenDoc = await db.collection("qb_tokens").doc("main").get();
+    const { access_token, realmId } = tokenDoc.data();
+
+    const qbRes = await axios.get(
+      `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/query`,
+      {
+        params: { query: "select * from Vendor" },
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    const vendors = qbRes.data.QueryResponse.Vendor || [];
+    const batch = db.batch();       
+    vendors.forEach(v => {          
+        const ref = db.collection("qb_vendors").doc(v.Id);
+        batch.set(ref, {
+            name: v.DisplayName,
+            email: v.PrimaryEmailAddr?.Address || null,
+            active: v.Active,
+            syncedAt: new Date()
+        });
+    }
+    );
+    
+    await batch.commit();
+    res.send(`Synced ${vendors.length} vendors`);
+  }
+    catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).send("Vendor sync failed");
+  }
+});
+
+//Function to sync Item to Firestore
+exports.syncQBItems = functions.https.onRequest(async (req, res) => {
+  try {
+    const tokenDoc = await db.collection("qb_tokens").doc("main").get();
+    const { access_token, realmId } = tokenDoc.data();
+
+    const qbRes = await axios.get(
+      `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/query`,
+      {
+        params: { query: "select * from Item" },
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    const items = qbRes.data.QueryResponse.Item || [];
+    const batch = db.batch();
+
+    items.forEach(i => {
+      const ref = db.collection("qb_items").doc(i.Id);
+      batch.set(ref, {                  
+        name: i.Name,
+        type: i.Type,
+        active: i.Active,
+        unitPrice: i.UnitPrice || null,
+        qtyOnHand: i.QtyOnHand || null,
+        syncedAt: new Date()
+      });
+    });
+
+    await batch.commit();
+    res.send(`Synced ${items.length} items`);
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).send("Item sync failed");
+  }
+}); 
+
+// Additional functions can be added similarly
