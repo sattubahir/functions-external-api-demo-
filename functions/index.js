@@ -19,7 +19,7 @@ exports.qbAuth = functions.https.onRequest((req, res) => {
   res.redirect(authUrl);
 });
 
-// THIS WAS MISSING 👇
+// Auth callback to handle OAuth response
 exports.qbAuthCallback = functions.https.onRequest(async (req, res) => {
   try {
     const code = req.query.code;
@@ -78,3 +78,79 @@ exports.getQBCustomers = functions.https.onRequest(async (req, res) => {
   }
 });
 
+// Function to sync customers to Firestore
+exports.syncQBCustomers = functions.https.onRequest(async (req, res) => {
+  try {
+    const tokenDoc = await db.collection("qb_tokens").doc("main").get();
+    const { access_token, realmId } = tokenDoc.data();
+
+    const qbRes = await axios.get(
+      `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/query`,
+      {
+        params: { query: "select * from Customer" },
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    const customers = qbRes.data.QueryResponse.Customer || [];
+    const batch = db.batch();
+
+    customers.forEach(c => {
+      const ref = db.collection("qb_customers").doc(c.Id);
+      batch.set(ref, {
+        name: c.DisplayName,
+        email: c.PrimaryEmailAddr?.Address || null,
+        active: c.Active,
+        syncedAt: new Date()
+      });
+    });
+
+    await batch.commit();
+    res.send(`Synced ${customers.length} customers`);
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).send("Sync failed");
+  }
+});
+// Function to sync payments to Firestore
+exports.syncQBPayments = functions.https.onRequest(async (req, res) => {
+  try {
+    const tokenDoc = await db.collection("qb_tokens").doc("main").get();
+    const { access_token, realmId } = tokenDoc.data();
+
+    const qbRes = await axios.get(
+      `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}/query`,
+      {
+        params: { query: "select * from Payment" },
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    const payments = qbRes.data.QueryResponse.Payment || [];
+    const batch = db.batch();
+
+    payments.forEach(p => {
+      const ref = db.collection("qb_payments").doc(p.Id);
+      batch.set(ref, {
+        totalAmt: p.TotalAmt,
+        customerRef: p.CustomerRef?.value || null,
+        paymentMethod: p.PaymentMethodRef?.name || null,
+        txnDate: p.TxnDate,
+        status: p.PrivateNote || "NA",
+        syncedAt: new Date()
+      });
+    });
+
+    await batch.commit();
+    res.send(`Synced ${payments.length} payments`);
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).send("Payment sync failed");
+  }
+});
